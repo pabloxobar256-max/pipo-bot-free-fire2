@@ -9,3 +9,4 @@ gunicorn
 protobuf
 pyTelegramBotAPI
 protobuf_decoder
+pycryptodome
