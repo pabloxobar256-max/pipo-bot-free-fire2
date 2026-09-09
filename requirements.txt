@@ -7,3 +7,4 @@ PyJWT
 flask
 gunicorn
 protobuf
+pyTelegramBotAPI
