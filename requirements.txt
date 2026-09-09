@@ -6,3 +6,4 @@ numpy
 PyJWT
 flask
 gunicorn
+protobuf
