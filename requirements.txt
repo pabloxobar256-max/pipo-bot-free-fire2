@@ -8,3 +8,4 @@ flask
 gunicorn
 protobuf
 pyTelegramBotAPI
+protobuf_decoder
