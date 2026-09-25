@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة نهائية
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — Instagram + TikTok + YouTube
 
 import os
 import re
@@ -23,8 +23,6 @@ BOT_NAME = "𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫"
 ADMIN_SECRET = "830714pipo"
 
 COOKIES_FILE = "cookies.txt"
-# ⚠️ Proxy معطّل حالياً بسبب خطأ 407
-PROXY = None
 
 DOWNLOAD_DIR = "downloads"
 DB_FILE = "pipo_bot.db"
@@ -58,8 +56,6 @@ def load_bot_photo():
         if photos.total_count > 0:
             BOT_PHOTO_ID = photos.photos[0][-1].file_id
             print("[+] Bot photo loaded")
-        else:
-            print("[!] لا توجد صورة للبوت")
     except Exception as e:
         print(f"[!] خطأ: {e}")
 
@@ -158,8 +154,59 @@ def extract_url(text):
     m = URL_REGEX.search(text) if text else None
     return m.group(0) if m else None
 
-# ==================== التنزيل ====================
+# ==================== Instagram (لا نلمسه — يعمل) ====================
+def try_snapinsta(url):
+    try:
+        import requests
+        HEADERS = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
+        api = 'https://snapinsta.app/api/ajaxSearch'
+        r = requests.post(api, data={'q': url, 't': 'media', 'lang': 'en'}, headers=HEADERS, timeout=30)
+        if r.status_code != 200: return None
+        j = r.json()
+        if 'data' not in j: return None
+        html = j['data']
+        videos = re.findall(r'href="(https://[^"]+\.mp4[^"]*)"', html)
+        videos += re.findall(r'data-direct="(https://[^"]+)"', html)
+        videos = list(dict.fromkeys(videos))
+        if not videos:
+            photos = re.findall(r'href="(https://[^"]+\.jpg[^"]*)"', html)
+            if photos: return {'type': 'url_photo', 'url': photos[0]}
+            return None
+        return {'type': 'url_video', 'url': videos[0]}
+    except Exception as e:
+        print(f"[snapinsta] {e}")
+        return None
+
+def try_oembed(url):
+    try:
+        import requests
+        from urllib.parse import quote
+        r = requests.get(f'https://api.instagram.com/oembed/?url={quote(url)}',
+                        headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+        if r.status_code != 200: return None
+        j = r.json()
+        if 'thumbnail_url' not in j: return None
+        return {'type': 'url_photo', 'url': j['thumbnail_url']}
+    except Exception as e:
+        print(f"[oembed] {e}")
+        return None
+
+def download_instagram(url):
+    """Instagram — لا نلمسه، يعمل"""
+    for func in [try_snapinsta, try_oembed]:
+        result = func(url)
+        if result:
+            print(f"[+] Instagram via {func.__name__}")
+            return result
+        time.sleep(0.5)
+    return None
+
+# ==================== TikTok + YouTube + الباقي عبر yt-dlp ====================
 def download_ytdlp(url, user_id):
+    """TikTok + YouTube + Facebook + Twitter + الباقي"""
     try:
         platform = detect_platform(url)
         safe_id = f"{user_id}_{int(time.time())}"
@@ -177,18 +224,31 @@ def download_ytdlp(url, user_id):
             'retries': 10,
             'fragment_retries': 10,
             'socket_timeout': 60,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         }
 
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
-        if PROXY:
-            ydl_opts['proxy'] = PROXY
-
-        if 'youtube' in url or 'youtu.be' in url:
-            ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
-        elif 'tiktok' in url:
-            ydl_opts['extractor_args'] = {'tiktok': {'api_hostname': 'api22-normal-c-useast2a.tiktokv.com'}}
+        # إعدادات TikTok
+        if 'tiktok' in url:
+            ydl_opts['extractor_args'] = {
+                'tiktok': {
+                    'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
+                    'app_version': '34.0.5',
+                    'manifest_app_version': '34.0.5',
+                }
+            }
+        # إعدادات YouTube
+        elif 'youtube' in url or 'youtu.be' in url:
+            ydl_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['web', 'android', 'ios', 'tv_embedded'],
+                }
+            }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -197,19 +257,19 @@ def download_ytdlp(url, user_id):
             for ext in ['mp4', 'webm', 'mkv', 'm4a', 'mp3']:
                 path = os.path.join(DOWNLOAD_DIR, f"{safe_id}.{ext}")
                 if os.path.exists(path):
-                    return {'path': path, 'title': title, 'platform': platform}
+                    return {'type': 'file', 'path': path, 'title': title, 'platform': platform}
         return None
     except Exception as e:
         print(f"[ytdlp] ERROR: {e}")
         return None
 
 def download_media(url, user_id):
+    platform = detect_platform(url)
+    if platform == 'Instagram':
+        r = download_instagram(url)
+        if r: return r
     r = download_ytdlp(url, user_id)
-    if r:
-        ext = r['path'].split('.')[-1].lower()
-        mtype = 'audio' if ext == 'mp3' else 'video'
-        return {'type': mtype, 'path': r['path'], 'title': r.get('title', ''),
-                'platform': r.get('platform', '')}
+    if r: return r
     return None
 
 # ==================== لوحات المفاتيح ====================
@@ -576,22 +636,23 @@ def handle_url(message):
             pass
         return
 
-    title = result.get('title', '')[:100]
-    caption = f"✅ تم التنزيل\n📌 {title}\n🌐 {platform}"
+    title = result.get('title', '')[:100] if 'title' in result else ''
+    caption = f"✅ تم التنزيل\n📌 {title}\n🌐 {platform}" if title else f"✅ تم التنزيل\n🌐 {platform}"
 
     try:
-        if result['type'] == 'video':
+        if result['type'] == 'url_video':
+            bot.send_video(chat_id, result['url'], caption=caption, supports_streaming=True)
+        elif result['type'] == 'url_photo':
+            bot.send_photo(chat_id, result['url'], caption=caption)
+        elif result['type'] == 'file':
+            ext = result['path'].split('.')[-1].lower()
             with open(result['path'], 'rb') as f:
-                bot.send_video(chat_id, f, caption=caption, supports_streaming=True)
-        elif result['type'] == 'audio':
-            with open(result['path'], 'rb') as f:
-                bot.send_audio(chat_id, f, caption=caption)
-        elif result['type'] == 'photo':
-            with open(result['path'], 'rb') as f:
-                bot.send_photo(chat_id, f, caption=caption)
-
-        try: os.remove(result['path'])
-        except: pass
+                if ext == 'mp3':
+                    bot.send_audio(chat_id, f, caption=caption)
+                else:
+                    bot.send_video(chat_id, f, caption=caption, supports_streaming=True)
+            try: os.remove(result['path'])
+            except: pass
 
         try:
             bot.delete_message(chat_id, wait.message_id)
@@ -620,7 +681,6 @@ def handle_other(message):
 
 # ==================== التشغيل ====================
 if __name__ == '__main__':
-    # حذف أي webhook قديم
     try:
         bot.remove_webhook()
         print("[+] Webhook cleared")
@@ -628,8 +688,6 @@ if __name__ == '__main__':
         pass
 
     load_bot_photo()
-
-    # تشغيل Flask في خيط منفصل
     threading.Thread(target=run_flask, daemon=True).start()
 
     print("=" * 60)
@@ -637,7 +695,6 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"  🎬 FFmpeg: {FFMPEG_PATH}")
     print(f"  🍪 Cookies: {'✓' if os.path.exists(COOKIES_FILE) else '✗'}")
-    print(f"  🌐 Proxy: {'✓' if PROXY else '✗ (معطّل)'}")
     print(f"  🖼️  Photo: {'✓' if BOT_PHOTO_ID else '✗'}")
     print("=" * 60)
 
