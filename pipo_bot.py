@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة نهائية
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة نهائية مع cookies + proxy
 
 import os
 import re
 import time
 import shutil
 import sqlite3
-import subprocess
 import threading
 from datetime import datetime
 
@@ -23,9 +22,14 @@ SUPPORT_USER = "amirx_xpipo"
 BOT_NAME = "𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫"
 ADMIN_SECRET = "830714pipo"
 
+# 🍪 ملف cookies
+COOKIES_FILE = "cookies.txt"
+
+# 🌐 Proxy (Webshare)
+PROXY = "http://qjpttzgi:6i7gk0phvepr@p.webshare.io:80"
+
 DOWNLOAD_DIR = "downloads"
 DB_FILE = "pipo_bot.db"
-COOKIES_FILE = "cookies.txt"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -158,7 +162,7 @@ def extract_url(text):
 
 # ==================== التنزيل ====================
 def download_ytdlp(url, user_id):
-    """تنزيل تلقائي بأفضل جودة"""
+    """تنزيل بأفضل جودة مع cookies و proxy"""
     try:
         platform = detect_platform(url)
         safe_id = f"{user_id}_{int(time.time())}"
@@ -177,7 +181,7 @@ def download_ytdlp(url, user_id):
             'nocheckcertificate': True,
             'retries': 10,
             'fragment_retries': 10,
-            'socket_timeout': 30,
+            'socket_timeout': 60,
             'extractor_retries': 5,
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -185,15 +189,21 @@ def download_ytdlp(url, user_id):
             },
         }
 
-        # استخدام cookies إن وُجدت
+        # 🍪 Cookies
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
+            print(f"[+] Using cookies: {COOKIES_FILE}")
 
-        # إعدادات خاصة لكل منصة
+        # 🌐 Proxy
+        if PROXY:
+            ydl_opts['proxy'] = PROXY
+            print(f"[+] Using proxy")
+
+        # إعدادات لكل منصة
         if 'youtube' in url or 'youtu.be' in url:
             ydl_opts['extractor_args'] = {
                 'youtube': {
-                    'player_client': ['android'],
+                    'player_client': ['web', 'android', 'ios'],
                 }
             }
         elif 'tiktok' in url:
@@ -218,7 +228,7 @@ def download_ytdlp(url, user_id):
         return None
 
 def download_media(url, user_id):
-    """كل المنصات عبر yt-dlp — بما فيها Instagram"""
+    """كل المنصات عبر yt-dlp"""
     r = download_ytdlp(url, user_id)
     if r:
         ext = r['path'].split('.')[-1].lower()
@@ -622,6 +632,7 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"  🎬 FFmpeg: {FFMPEG_PATH}")
     print(f"  🍪 Cookies: {'✓' if os.path.exists(COOKIES_FILE) else '✗'}")
+    print(f"  🌐 Proxy: {'✓' if PROXY else '✗'}")
     print(f"  🖼️  Photo: {'✓' if BOT_PHOTO_ID else '✗'}")
     print("=" * 60)
     bot.infinity_polling(timeout=30, long_polling_timeout=20)
