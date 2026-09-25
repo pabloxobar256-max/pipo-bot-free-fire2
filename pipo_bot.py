@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة مجانية بأزرار كبيرة
-# التشغيل: python pipo_bot.py
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة مجانية جاهزة لـ Render
 
 import os
 import re
@@ -9,10 +8,12 @@ import time
 import shutil
 import sqlite3
 import subprocess
+import threading
 from datetime import datetime
 
 import telebot
 from telebot import types
+from flask import Flask
 import yt_dlp
 import instaloader
 
@@ -42,6 +43,21 @@ else:
     except Exception:
         FFMPEG_PATH = "ffmpeg"
         print("[!] FFmpeg غير متوفر")
+
+# ==================== Flask (للـ Render) ====================
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "PIPO Download Bot is running!"
+
+@app.route('/health')
+def health():
+    return "OK"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
 
 # ==================== قاعدة البيانات ====================
 def init_db():
@@ -78,7 +94,7 @@ def db_query(q, p=(), fetch=False):
     conn.close()
     return r
 
-# ==================== إدارة ====================
+# ==================== إدارة المستخدمين ====================
 def add_user(uid, username, first_name):
     ex = db_query("SELECT user_id FROM users WHERE user_id=?", (uid,), True)
     if not ex:
@@ -107,7 +123,7 @@ def get_pending(uid):
 def clear_pending(uid):
     db_query("DELETE FROM pending WHERE user_id=?", (uid,))
 
-# ==================== المنصات ====================
+# ==================== كشف المنصة ====================
 PLATFORMS = {
     'youtube.com': 'YouTube', 'youtu.be': 'YouTube',
     'instagram.com': 'Instagram', 'tiktok.com': 'TikTok',
@@ -234,10 +250,8 @@ def download_media(url, user_id, audio_only=False, quality='best'):
                 'platform': r.get('platform', '')}
     return None
 
-# ==================== لوحات المفاتيح (كبيرة مثل الصورة) ====================
-
+# ==================== لوحات المفاتيح ====================
 def kb_services():
-    """لوحة الخدمات الرئيسية — أزرار كبيرة بعمودين"""
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton("📥 تنزيل فيديو", callback_data="s_video"),
@@ -260,7 +274,6 @@ def kb_services():
     return kb
 
 def kb_quality_for_url():
-    """لوحة خيارات الجودة عند إرسال رابط"""
     kb = types.InlineKeyboardMarkup(row_width=2)
     kb.add(
         types.InlineKeyboardButton("📥 عادي", callback_data="q_best"),
@@ -326,12 +339,10 @@ def cb_handler(call):
     uid = call.from_user.id
     data = call.data
 
-    # ---- لوحة المطور ----
     if data.startswith("a_") and uid == ADMIN_ID:
         handle_admin_cb(call, data)
         return
 
-    # ---- الرجوع للخدمات ----
     if data == "s_back":
         name = call.from_user.first_name or "صديقي"
         text = (
@@ -339,10 +350,6 @@ def cb_handler(call):
             f"📥 *{BOT_NAME}*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⚡ بوت تنزيلات مجاني بالكامل\n"
-            f"✅ يدعم 15+ منصة\n"
-            f"🎵 صوت • 🎬 HD • 🔥 2K\n"
-            f"♾️ بلا حدود\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
             f"👇 اختر خدمة، أو أرسل رابطاً مباشرة:"
         )
         try:
@@ -359,39 +366,30 @@ def cb_handler(call):
         bot.answer_callback_query(call.id, "🏠")
         return
 
-    # ---- الخدمات ----
     if data == "s_video":
         bot.answer_callback_query(call.id, "📥")
         bot.send_message(call.message.chat.id,
-            "📥 *تنزيل فيديو*\n\n"
-            "أرسل الرابط الآن، وسأعرض لك خيارات الجودة.",
+            "📥 *تنزيل فيديو*\n\nأرسل الرابط الآن.",
             parse_mode='Markdown', reply_markup=kb_back())
         return
-
     if data == "s_audio":
         bot.answer_callback_query(call.id, "🎵")
         bot.send_message(call.message.chat.id,
-            "🎵 *استخراج صوت MP3*\n\n"
-            "أرسل الرابط الآن، واختر (صوت MP3).",
+            "🎵 *استخراج صوت*\n\nأرسل الرابط واختر (صوت MP3).",
             parse_mode='Markdown', reply_markup=kb_back())
         return
-
     if data == "s_hd":
         bot.answer_callback_query(call.id, "🎬")
         bot.send_message(call.message.chat.id,
-            "🎬 *جودة HD 1080p*\n\n"
-            "أرسل الرابط الآن، واختر (HD).",
+            "🎬 *HD 1080p*\n\nأرسل الرابط واختر (HD).",
             parse_mode='Markdown', reply_markup=kb_back())
         return
-
     if data == "s_2k":
         bot.answer_callback_query(call.id, "🔥")
         bot.send_message(call.message.chat.id,
-            "🔥 *جودة 2K محسّنة*\n\n"
-            "أرسل الرابط الآن، واختر (2K).",
+            "🔥 *2K محسّن*\n\nأرسل الرابط واختر (2K).",
             parse_mode='Markdown', reply_markup=kb_back())
         return
-
     if data == "s_history":
         rows = db_query("SELECT url, platform, date FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10",
                         (uid,), True)
@@ -407,7 +405,6 @@ def cb_handler(call):
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back(),
                          parse_mode='Markdown')
         return
-
     if data == "s_status":
         r = db_query("SELECT downloads, joined FROM users WHERE user_id=?", (uid,), True)
         dls = r[0][0] if r else 0
@@ -423,30 +420,24 @@ def cb_handler(call):
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back(),
                          parse_mode='Markdown')
         return
-
     if data == "s_platforms":
         text = (
             "📋 *المنصات المدعومة:*\n\n"
             "• YouTube\n• TikTok\n• Instagram\n"
             "• Twitter / X\n• Facebook\n• Snapchat\n"
             "• Pinterest\n• Reddit\n• Telegram\n"
-            "• Vimeo\n• Dailymotion\n• Twitch\n"
-            "• + منصات أخرى"
+            "• Vimeo\n• Dailymotion\n• Twitch"
         )
         bot.answer_callback_query(call.id, "📋")
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back(),
                          parse_mode='Markdown')
         return
-
     if data == "s_help":
         text = (
             "ℹ️ *كيف أستخدم البوت:*\n\n"
-            "1️⃣ أرسل رابط الفيديو من أي منصة.\n"
-            "2️⃣ اختر الجودة التي تريدها.\n"
-            "3️⃣ انتظر التنزيل.\n\n"
-            "🎵 للصوت: اختر (صوت MP3).\n"
-            "🎬 للجودة العالية: اختر (HD).\n"
-            "🔥 للجودة القصوى: اختر (2K)."
+            "1️⃣ أرسل رابط الفيديو.\n"
+            "2️⃣ اختر الجودة.\n"
+            "3️⃣ انتظر التنزيل."
         )
         bot.answer_callback_query(call.id, "ℹ️")
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back(),
@@ -466,7 +457,7 @@ def cb_handler(call):
 
         url, platform = get_pending(uid)
         if not url:
-            bot.answer_callback_query(call.id, "❌ انتهت الصلاحية، أرسل الرابط مجدداً", show_alert=True)
+            bot.answer_callback_query(call.id, "❌ انتهت الصلاحية", show_alert=True)
             return
 
         quality_map = {
@@ -495,7 +486,6 @@ def cb_handler(call):
             clear_pending(uid)
             return
 
-        # تحسين 2K
         if quality == '2k' and result['type'] == 'video' and FFMPEG_PATH != "ffmpeg":
             bot.edit_message_text("🔥 جارٍ تحسين الجودة إلى 2K...",
                                   chat_id=chat_id, message_id=wait.message_id)
@@ -601,8 +591,10 @@ def do_broadcast(msg):
     users = db_query("SELECT user_id FROM users WHERE banned=0", fetch=True)
     ok = fail = 0
     for (u,) in users:
-        try: bot.send_message(u, msg.text); ok += 1; time.sleep(0.05)
-        except: fail += 1
+        try:
+            bot.send_message(u, msg.text); ok += 1; time.sleep(0.05)
+        except:
+            fail += 1
     bot.reply_to(msg, f"✅ {ok} | ❌ {fail}")
 
 def do_ban(msg):
@@ -611,7 +603,8 @@ def do_ban(msg):
         u = int(msg.text.strip())
         db_query("UPDATE users SET banned=1 WHERE user_id=?", (u,))
         bot.reply_to(msg, f"🚫 {u}")
-    except: bot.reply_to(msg, "❌")
+    except:
+        bot.reply_to(msg, "❌")
 
 def do_unban(msg):
     if msg.from_user.id != ADMIN_ID: return
@@ -619,18 +612,22 @@ def do_unban(msg):
         u = int(msg.text.strip())
         db_query("UPDATE users SET banned=0 WHERE user_id=?", (u,))
         bot.reply_to(msg, f"✅ {u}")
-    except: bot.reply_to(msg, "❌")
+    except:
+        bot.reply_to(msg, "❌")
 
 def do_search(msg):
     if msg.from_user.id != ADMIN_ID: return
     try:
         u = int(msg.text.strip())
         r = db_query("SELECT * FROM users WHERE user_id=?", (u,), True)
-        if not r: bot.reply_to(msg, "❌"); return
+        if not r:
+            bot.reply_to(msg, "❌")
+            return
         row = r[0]
         bot.reply_to(msg,
             f"👤 {row[2]}\n🆔 {row[0]}\n📥 {row[4]}\n🚫 {'نعم' if row[3] else 'لا'}")
-    except: bot.reply_to(msg, "❌")
+    except:
+        bot.reply_to(msg, "❌")
 
 # ==================== الكود السري ====================
 @bot.message_handler(func=lambda m: m.text == ADMIN_SECRET)
@@ -651,10 +648,8 @@ def handle_url(message):
     if not url: return
     platform = detect_platform(url)
 
-    # حفظ الرابط مؤقتاً
     save_pending(uid, url, platform)
 
-    # عرض خيارات الجودة
     text = (
         f"🎬 *الرابط مستلم*\n\n"
         f"🌐 المنصة: {platform}\n"
@@ -673,26 +668,8 @@ def handle_other(message):
 
 # ==================== التشغيل ====================
 if __name__ == '__main__':
-# ==================== Render Support ====================
-from flask import Flask
-import threading as _th
-
-_app = Flask(__name__)
-
-@_app.route('/')
-def _index():
-    return "PIPO Download Bot is running!"
-
-@_app.route('/health')
-def _health():
-    return "OK"
-
-def _run_flask():
-    port = int(os.environ.get('PORT', 8080))
-    _app.run(host='0.0.0.0', port=port)
-
-if __name__ == '__main__':
-    _th.Thread(target=_run_flask, daemon=True).start()
+    # تشغيل Flask للمنفذ (Render)
+    threading.Thread(target=run_flask, daemon=True).start()
     print("=" * 60)
     print(f"  🔥 {BOT_NAME} — يعمل على Render")
     print("=" * 60)
