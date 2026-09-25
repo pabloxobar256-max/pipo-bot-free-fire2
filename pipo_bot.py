@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة مجانية جاهزة لـ Render
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — جلب الصورة تلقائياً
 
 import os
 import re
@@ -29,6 +29,24 @@ DB_FILE = "pipo_bot.db"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# ==================== جلب صورة البوت تلقائياً ====================
+BOT_PHOTO_ID = None
+
+def load_bot_photo():
+    global BOT_PHOTO_ID
+    try:
+        me = bot.get_me()
+        photos = bot.get_user_profile_photos(me.id, limit=1)
+        if photos.total_count > 0:
+            sizes = photos.photos[0]
+            biggest = sizes[-1]
+            BOT_PHOTO_ID = biggest.file_id
+            print(f"[+] Bot photo loaded: {BOT_PHOTO_ID[:30]}...")
+        else:
+            print("[!] لا توجد صورة للبوت. أضف صورة عبر @BotFather.")
+    except Exception as e:
+        print(f"[!] خطأ في جلب صورة البوت: {e}")
 
 # ==================== FFmpeg ====================
 _ff = shutil.which("ffmpeg")
@@ -80,6 +98,12 @@ def init_db():
         url TEXT, platform TEXT,
         date TEXT DEFAULT CURRENT_TIMESTAMP
     )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS suggestions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER, username TEXT, first_name TEXT,
+        message TEXT,
+        date TEXT DEFAULT CURRENT_TIMESTAMP
+    )''')
     conn.commit()
     conn.close()
 
@@ -123,6 +147,10 @@ def get_pending(uid):
 def clear_pending(uid):
     db_query("DELETE FROM pending WHERE user_id=?", (uid,))
 
+def save_suggestion(uid, username, first_name, message):
+    db_query("INSERT INTO suggestions (user_id, username, first_name, message) VALUES (?, ?, ?, ?)",
+             (uid, username or "", first_name or "", message))
+
 # ==================== كشف المنصة ====================
 PLATFORMS = {
     'youtube.com': 'YouTube', 'youtu.be': 'YouTube',
@@ -156,26 +184,49 @@ def download_ytdlp(url, user_id, audio_only=False, quality='best'):
         if audio_only:
             fmt = 'bestaudio/best'
         elif quality == '2k':
-            fmt = ('bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/'
-                   'bestvideo[height<=1440]+bestaudio/best[height<=1440]/best')
+            fmt = 'bestvideo[height<=1440]+bestaudio/best[height<=1440]/best'
         elif quality == 'hd':
-            fmt = ('bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/'
-                   'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best')
+            fmt = 'bestvideo[height<=1080]+bestaudio/best[height<=1080]/best'
         else:
-            fmt = 'best[ext=mp4]/best'
+            fmt = 'best[ext=mp4]/best[ext=webm]/best'
 
         ydl_opts = {
-            'outtmpl': out_tmpl, 'quiet': True, 'no_warnings': True,
+            'outtmpl': out_tmpl,
+            'quiet': True,
+            'no_warnings': True,
             'format': fmt,
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-            'geo_bypass': True, 'nocheckcertificate': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'geo_bypass': True,
+            'geo_bypass_country': 'US',
+            'nocheckcertificate': True,
             'merge_output_format': 'mp4',
-            'retries': 3, 'fragment_retries': 3,
+            'retries': 10,
+            'fragment_retries': 10,
+            'socket_timeout': 30,
+            'extractor_retries': 5,
+            'file_access_retries': 5,
+            'ignoreerrors': False,
+            'no_color': True,
+            'prefer_free_formats': False,
+            'check_formats': False,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Sec-Fetch-Mode': 'navigate',
+            },
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['android', 'web'],
-                    'skip': ['hls', 'dash'],
-                }
+                    'player_client': ['android', 'ios', 'web_safari', 'mweb'],
+                    'player_skip': ['webpage', 'configs'],
+                },
+                'tiktok': {
+                    'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
+                    'app_version': '34.0.5',
+                },
+                'instagram': {
+                    'include_stories': False,
+                },
             },
         }
 
@@ -188,6 +239,8 @@ def download_ytdlp(url, user_id, audio_only=False, quality='best'):
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            if info is None:
+                return None
             title = info.get('title', 'video')[:80]
             for ext in ['mp4', 'mp3', 'webm', 'mkv', 'm4a']:
                 path = os.path.join(DOWNLOAD_DIR, f"{safe_id}.{ext}")
@@ -195,7 +248,7 @@ def download_ytdlp(url, user_id, audio_only=False, quality='best'):
                     return {'path': path, 'title': title, 'platform': platform}
         return None
     except Exception as e:
-        print(f"[ytdlp] {e}")
+        print(f"[ytdlp] ERROR: {e}")
         return None
 
 def improve_video_quality(input_path, output_path):
@@ -269,6 +322,7 @@ def kb_services():
         types.InlineKeyboardButton("📋 قائمة المنصات", callback_data="s_platforms"),
         types.InlineKeyboardButton("ℹ️ كيف أستخدم", callback_data="s_help"),
     )
+    kb.add(types.InlineKeyboardButton("💡 اقتراح ميزة جديدة", callback_data="suggest"))
     kb.add(types.InlineKeyboardButton(f"🆘 الدعم @{SUPPORT_USER}",
                                        url=f"https://t.me/{SUPPORT_USER}"))
     return kb
@@ -309,6 +363,9 @@ def kb_admin():
         types.InlineKeyboardButton("📊 حسب المنصة", callback_data="a_platforms"),
         types.InlineKeyboardButton("🔍 بحث مستخدم", callback_data="a_search"),
     )
+    kb.add(
+        types.InlineKeyboardButton("💡 اقتراحات المستخدمين", callback_data="a_suggestions"),
+    )
     return kb
 
 # ==================== /start ====================
@@ -319,7 +376,7 @@ def cmd_start(message):
     if is_banned(uid): return
 
     name = message.from_user.first_name or "صديقي"
-    text = (
+    caption = (
         f"🔥 *أهلاً {name}*\n\n"
         f"📥 *{BOT_NAME}*\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -330,8 +387,21 @@ def cmd_start(message):
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"👇 اختر خدمة، أو أرسل رابطاً مباشرة:"
     )
-    bot.send_message(message.chat.id, text, reply_markup=kb_services(),
-                     parse_mode='Markdown', disable_web_page_preview=True)
+
+    if BOT_PHOTO_ID:
+        try:
+            bot.send_photo(message.chat.id, BOT_PHOTO_ID,
+                           caption=caption,
+                           reply_markup=kb_services(),
+                           parse_mode='Markdown')
+            return
+        except Exception as e:
+            print(f"[start photo] {e}")
+
+    bot.send_message(message.chat.id, caption,
+                     reply_markup=kb_services(),
+                     parse_mode='Markdown',
+                     disable_web_page_preview=True)
 
 # ==================== الأزرار ====================
 @bot.callback_query_handler(func=lambda c: True)
@@ -345,7 +415,7 @@ def cb_handler(call):
 
     if data == "s_back":
         name = call.from_user.first_name or "صديقي"
-        text = (
+        caption = (
             f"🔥 *أهلاً {name}*\n\n"
             f"📥 *{BOT_NAME}*\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -353,42 +423,56 @@ def cb_handler(call):
             f"👇 اختر خدمة، أو أرسل رابطاً مباشرة:"
         )
         try:
-            bot.edit_message_text(text, chat_id=call.message.chat.id,
-                                  message_id=call.message.message_id,
-                                  reply_markup=kb_services(),
-                                  parse_mode='Markdown',
-                                  disable_web_page_preview=True)
+            bot.delete_message(call.message.chat.id, call.message.message_id)
         except:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=kb_services(),
-                             parse_mode='Markdown',
-                             disable_web_page_preview=True)
+            pass
+
+        if BOT_PHOTO_ID:
+            try:
+                bot.send_photo(call.message.chat.id, BOT_PHOTO_ID,
+                               caption=caption,
+                               reply_markup=kb_services(),
+                               parse_mode='Markdown')
+                bot.answer_callback_query(call.id, "🏠")
+                return
+            except:
+                pass
+
+        bot.send_message(call.message.chat.id, caption,
+                         reply_markup=kb_services(),
+                         parse_mode='Markdown')
         bot.answer_callback_query(call.id, "🏠")
+        return
+
+    if data == "suggest":
+        bot.answer_callback_query(call.id, "💡")
+        msg = bot.send_message(call.message.chat.id,
+            "💡 *اقتراح ميزة جديدة*\n\n"
+            "📝 أرسل اقتراحك الآن، وسيُرسل مباشرة للمطور.\n\n"
+            "❌ للإلغاء أرسل /cancel",
+            parse_mode='Markdown')
+        bot.register_next_step_handler(msg, do_suggestion, uid)
         return
 
     if data == "s_video":
         bot.answer_callback_query(call.id, "📥")
-        bot.send_message(call.message.chat.id,
-            "📥 *تنزيل فيديو*\n\nأرسل الرابط الآن.",
-            parse_mode='Markdown', reply_markup=kb_back())
+        bot.send_message(call.message.chat.id, "📥 أرسل الرابط الآن.",
+                         reply_markup=kb_back())
         return
     if data == "s_audio":
         bot.answer_callback_query(call.id, "🎵")
-        bot.send_message(call.message.chat.id,
-            "🎵 *استخراج صوت*\n\nأرسل الرابط واختر (صوت MP3).",
-            parse_mode='Markdown', reply_markup=kb_back())
+        bot.send_message(call.message.chat.id, "🎵 أرسل الرابط واختر (صوت MP3).",
+                         reply_markup=kb_back())
         return
     if data == "s_hd":
         bot.answer_callback_query(call.id, "🎬")
-        bot.send_message(call.message.chat.id,
-            "🎬 *HD 1080p*\n\nأرسل الرابط واختر (HD).",
-            parse_mode='Markdown', reply_markup=kb_back())
+        bot.send_message(call.message.chat.id, "🎬 أرسل الرابط واختر (HD).",
+                         reply_markup=kb_back())
         return
     if data == "s_2k":
         bot.answer_callback_query(call.id, "🔥")
-        bot.send_message(call.message.chat.id,
-            "🔥 *2K محسّن*\n\nأرسل الرابط واختر (2K).",
-            parse_mode='Markdown', reply_markup=kb_back())
+        bot.send_message(call.message.chat.id, "🔥 أرسل الرابط واختر (2K).",
+                         reply_markup=kb_back())
         return
     if data == "s_history":
         rows = db_query("SELECT url, platform, date FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10",
@@ -444,7 +528,6 @@ def cb_handler(call):
                          parse_mode='Markdown')
         return
 
-    # ---- خيارات الجودة ----
     if data.startswith("q_"):
         if data == "q_cancel":
             clear_pending(uid)
@@ -521,6 +604,42 @@ def cb_handler(call):
             bot.edit_message_text(f"❌ خطأ: {e}", chat_id=chat_id, message_id=wait.message_id)
         return
 
+# ==================== معالجة اقتراح المستخدم ====================
+def do_suggestion(message, uid):
+    if not message.text:
+        bot.reply_to(message, "❌ أرسل نص الاقتراح.")
+        return
+
+    text = message.text.strip()
+
+    if text.startswith('/'):
+        bot.reply_to(message, "❌ تم إلغاء الاقتراح.")
+        return
+
+    username = message.from_user.username or "لا يوجد"
+    first_name = message.from_user.first_name or "مستخدم"
+
+    save_suggestion(uid, username, first_name, text)
+
+    try:
+        admin_msg = (
+            f"💡 *اقتراح جديد*\n\n"
+            f"👤 الاسم: {first_name}\n"
+            f"🆔 ID: `{uid}`\n"
+            f"📛 Username: @{username}\n\n"
+            f"📝 *الاقتراح:*\n{text}"
+        )
+        bot.send_message(ADMIN_ID, admin_msg, parse_mode='Markdown')
+    except Exception as e:
+        print(f"[suggestion to admin] {e}")
+
+    kb = types.InlineKeyboardMarkup()
+    kb.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="s_back"))
+    bot.send_message(message.chat.id,
+        "✅ *تم إرسال اقتراحك للمطور!*\n\n"
+        "شكراً لك، سنراجعه قريباً.",
+        reply_markup=kb, parse_mode='Markdown')
+
 # ==================== لوحة المطور ====================
 def handle_admin_cb(call, data):
     kb_back_a = types.InlineKeyboardMarkup()
@@ -544,10 +663,17 @@ def handle_admin_cb(call, data):
         tu = db_query("SELECT COUNT(*) FROM users WHERE joined LIKE ?", (f"{today}%",), True)[0][0]
         td = db_query("SELECT COUNT(*) FROM history WHERE date LIKE ?", (f"{today}%",), True)[0][0]
         b = db_query("SELECT COUNT(*) FROM users WHERE banned=1", fetch=True)[0][0]
+        sug = db_query("SELECT COUNT(*) FROM suggestions", fetch=True)[0][0]
         bot.answer_callback_query(call.id, "📊")
         bot.send_message(call.message.chat.id,
-            f"📊 *إحصائيات*\n\n👥 {users}\n🚫 {b}\n📥 {dls}\n\n📅 اليوم: 👤{tu} | 📥{td}",
+            f"📊 *إحصائيات*\n\n"
+            f"👥 المستخدمين: {users}\n"
+            f"🚫 محظورين: {b}\n"
+            f"📥 التنزيلات: {dls}\n"
+            f"💡 الاقتراحات: {sug}\n\n"
+            f"📅 اليوم: 👤{tu} | 📥{td}",
             reply_markup=kb_back_a, parse_mode='Markdown')
+
     elif data == "a_top":
         rows = db_query("SELECT first_name, downloads FROM users ORDER BY downloads DESC LIMIT 10", fetch=True)
         text = "🏆 *أفضل 10:*\n\n"
@@ -555,18 +681,22 @@ def handle_admin_cb(call, data):
             text += f"{i}. {n} — 📥{d}\n"
         bot.answer_callback_query(call.id, "🏆")
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back_a, parse_mode='Markdown')
+
     elif data == "a_broadcast":
         bot.answer_callback_query(call.id, "📢")
         msg = bot.send_message(call.message.chat.id, "✍️ أرسل الرسالة:")
         bot.register_next_step_handler(msg, do_broadcast)
+
     elif data == "a_ban":
         bot.answer_callback_query(call.id, "🚫")
         msg = bot.send_message(call.message.chat.id, "أرسل ID:")
         bot.register_next_step_handler(msg, do_ban)
+
     elif data == "a_unban":
         bot.answer_callback_query(call.id, "✅")
         msg = bot.send_message(call.message.chat.id, "أرسل ID:")
         bot.register_next_step_handler(msg, do_unban)
+
     elif data == "a_recent":
         rows = db_query("SELECT user_id, platform, date FROM history ORDER BY id DESC LIMIT 15", fetch=True)
         text = "📥 *آخر 15:*\n\n"
@@ -574,6 +704,7 @@ def handle_admin_cb(call, data):
             text += f"• {u} | {p} | {d[:16]}\n"
         bot.answer_callback_query(call.id, "📥")
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back_a, parse_mode='Markdown')
+
     elif data == "a_platforms":
         rows = db_query("SELECT platform, COUNT(*) FROM history GROUP BY platform ORDER BY COUNT(*) DESC", fetch=True)
         text = "📊 *حسب المنصة:*\n\n"
@@ -581,10 +712,24 @@ def handle_admin_cb(call, data):
             text += f"• {p}: {c}\n"
         bot.answer_callback_query(call.id, "📊")
         bot.send_message(call.message.chat.id, text, reply_markup=kb_back_a, parse_mode='Markdown')
+
     elif data == "a_search":
         bot.answer_callback_query(call.id, "🔍")
         msg = bot.send_message(call.message.chat.id, "أرسل ID:")
         bot.register_next_step_handler(msg, do_search)
+
+    elif data == "a_suggestions":
+        rows = db_query("SELECT first_name, username, message, date FROM suggestions ORDER BY id DESC LIMIT 15", fetch=True)
+        if not rows:
+            bot.answer_callback_query(call.id, "💡 لا يوجد")
+            bot.send_message(call.message.chat.id, "💡 لا توجد اقتراحات بعد.",
+                             reply_markup=kb_back_a)
+            return
+        text = "💡 *آخر 15 اقتراح:*\n\n"
+        for i, (name, un, msg, date) in enumerate(rows, 1):
+            text += f"{i}. *{name}* (@{un})\n   {msg[:80]}...\n   _{date[:16]}_\n\n"
+        bot.answer_callback_query(call.id, "💡")
+        bot.send_message(call.message.chat.id, text, reply_markup=kb_back_a, parse_mode='Markdown')
 
 def do_broadcast(msg):
     if msg.from_user.id != ADMIN_ID: return
@@ -668,11 +813,16 @@ def handle_other(message):
 
 # ==================== التشغيل ====================
 if __name__ == '__main__':
-    # تشغيل Flask للمنفذ (Render)
+    # جلب صورة البوت تلقائياً
+    load_bot_photo()
+
+    # تشغيل Flask للمنفذ
     threading.Thread(target=run_flask, daemon=True).start()
+
     print("=" * 60)
-    print(f"  🔥 {BOT_NAME} — يعمل على Render")
+    print(f"  🔥 {BOT_NAME} — يعمل")
     print("=" * 60)
     print(f"  🎬 FFmpeg: {FFMPEG_PATH}")
+    print(f"  🖼️  Bot Photo: {'✓' if BOT_PHOTO_ID else '✗ (أضف صورة عبر @BotFather)'}")
     print("=" * 60)
     bot.infinity_polling(timeout=30, long_polling_timeout=20)
