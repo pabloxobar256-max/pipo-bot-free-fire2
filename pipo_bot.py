@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة PTB
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة PTB نهائية
 
 import os
 import re
@@ -192,7 +192,7 @@ def download_instagram(url):
         time.sleep(0.5)
     return None
 
-# ==================== yt-dlp ====================
+# ==================== yt-dlp (TikTok + YouTube + الباقي) ====================
 def download_ytdlp(url, user_id):
     try:
         platform = detect_platform(url)
@@ -216,13 +216,21 @@ def download_ytdlp(url, user_id):
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
+        # إعدادات TikTok المُحسّنة
         if 'tiktok' in url:
             ydl_opts['extractor_args'] = {
                 'tiktok': {
                     'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
                     'app_version': '34.0.5',
+                    'manifest_app_version': '34.0.5',
+                    'aid': '1988',
                 }
             }
+            ydl_opts['http_headers'] = {
+                'User-Agent': 'com.zhiliaoapp.musically/2023400050 (Linux; U; Android 13; en_US; Pixel 7; Build/TQ3A.230805.001; Cronet/58.0.2991.0)',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+        # إعدادات YouTube المُحسّنة
         elif 'youtube' in url or 'youtu.be' in url:
             ydl_opts['extractor_args'] = {
                 'youtube': {'player_client': ['web', 'android', 'ios', 'tv_embedded']}
@@ -300,7 +308,6 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👇 أرسل رابطاً لتنزيله:"
     )
 
-    # محاولة إرسال صورة البوت
     bot_photo_id = context.bot_data.get('bot_photo_id')
     if bot_photo_id:
         try:
@@ -424,6 +431,21 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, da
         await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
         return
 
+    if data == "a_broadcast":
+        await query.message.chat.send_message("✍️ أرسل الرسالة للجميع:")
+        context.user_data['waiting_for_broadcast'] = True
+        return
+
+    if data == "a_ban":
+        await query.message.chat.send_message("أرسل ID للحظر:")
+        context.user_data['waiting_for_ban'] = True
+        return
+
+    if data == "a_unban":
+        await query.message.chat.send_message("أرسل ID لرفع الحظر:")
+        context.user_data['waiting_for_unban'] = True
+        return
+
     if data == "a_recent":
         rows = db_query("SELECT user_id, platform, date FROM history ORDER BY id DESC LIMIT 15", fetch=True)
         text = "📥 *آخر 15:*\n\n"
@@ -440,6 +462,11 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, da
         await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
         return
 
+    if data == "a_search":
+        await query.message.chat.send_message("أرسل ID للبحث:")
+        context.user_data['waiting_for_search'] = True
+        return
+
     if data == "a_suggestions":
         rows = db_query("SELECT first_name, username, message, date FROM suggestions ORDER BY id DESC LIMIT 15", fetch=True)
         if not rows:
@@ -451,16 +478,12 @@ async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, da
         await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
         return
 
-# ==================== اقتراح ====================
+# ==================== معالج الرسائل ====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالج الرسائل النصية"""
     message = update.message
-    if not message or not message.text:
-        return
-
+    if not message or not message.text: return
     text = message.text.strip()
     uid = message.from_user.id
-
     if is_banned(uid): return
 
     # اقتراح
@@ -475,9 +498,56 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"💡 *اقتراح جديد*\n\n👤 {first_name}\n🆔 `{uid}`\n"
                 f"📛 @{username}\n\n📝 {text}",
                 parse_mode='Markdown')
-        except:
-            pass
+        except: pass
         await message.reply_text("✅ تم إرسال اقتراحك!")
+        return
+
+    # broadcast
+    if context.user_data.get('waiting_for_broadcast') and uid == ADMIN_ID:
+        context.user_data['waiting_for_broadcast'] = False
+        users = db_query("SELECT user_id FROM users WHERE banned=0", fetch=True)
+        ok = fail = 0
+        for (u,) in users:
+            try:
+                await context.bot.send_message(u, text)
+                ok += 1
+                time.sleep(0.05)
+            except: fail += 1
+        await message.reply_text(f"✅ {ok} | ❌ {fail}")
+        return
+
+    # ban
+    if context.user_data.get('waiting_for_ban') and uid == ADMIN_ID:
+        context.user_data['waiting_for_ban'] = False
+        try:
+            u = int(text)
+            db_query("UPDATE users SET banned=1 WHERE user_id=?", (u,))
+            await message.reply_text(f"🚫 {u}")
+        except: await message.reply_text("❌")
+        return
+
+    # unban
+    if context.user_data.get('waiting_for_unban') and uid == ADMIN_ID:
+        context.user_data['waiting_for_unban'] = False
+        try:
+            u = int(text)
+            db_query("UPDATE users SET banned=0 WHERE user_id=?", (u,))
+            await message.reply_text(f"✅ {u}")
+        except: await message.reply_text("❌")
+        return
+
+    # search
+    if context.user_data.get('waiting_for_search') and uid == ADMIN_ID:
+        context.user_data['waiting_for_search'] = False
+        try:
+            u = int(text)
+            r = db_query("SELECT * FROM users WHERE user_id=?", (u,), True)
+            if not r:
+                await message.reply_text("❌")
+                return
+            row = r[0]
+            await message.reply_text(f"👤 {row[2]}\n🆔 {row[0]}\n📥 {row[4]}\n🚫 {'نعم' if row[3] else 'لا'}")
+        except: await message.reply_text("❌")
         return
 
     # كود المطور السري
@@ -531,8 +601,7 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: st
 
         try:
             await wait.delete()
-        except:
-            pass
+        except: pass
 
         inc_downloads(uid)
         log_history(uid, url, platform, title)
@@ -540,12 +609,10 @@ async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: st
         print(f"[send] {e}")
         try:
             await wait.edit_text(f"❌ خطأ: {e}")
-        except:
-            pass
+        except: pass
 
 # ==================== التشغيل ====================
 async def post_init(application: Application):
-    """يُستدعى بعد تهيئة التطبيق — لجلب صورة البوت"""
     try:
         me = await application.bot.get_me()
         photos = await application.bot.get_user_profile_photos(me.id, limit=1)
@@ -556,7 +623,6 @@ async def post_init(application: Application):
         print(f"[!] Bot photo: {e}")
 
 def main():
-    # Flask في خيط منفصل
     threading.Thread(target=run_flask, daemon=True).start()
 
     print("=" * 60)
@@ -566,19 +632,12 @@ def main():
     print(f"  🍪 Cookies: {'✓' if os.path.exists(COOKIES_FILE) else '✗'}")
     print("=" * 60)
 
-    # بناء التطبيق
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # الأوامر
     application.add_handler(CommandHandler("start", cmd_start))
-
-    # الأزرار (Callback)
     application.add_handler(CallbackQueryHandler(cb_handler))
-
-    # الرسائل (روابط + اقتراحات)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # التشغيل
     print("[+] Starting polling...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
