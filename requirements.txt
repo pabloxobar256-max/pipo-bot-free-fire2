@@ -1,6 +1,5 @@
-pyTelegramBotAPI
-yt-dlp>=2025.1.1
-instaloader>=4.15
-imageio-ffmpeg
-Flask
+python-telegram-bot==21.6
+yt-dlp
 requests
+Flask
+imageio-ffmpeg

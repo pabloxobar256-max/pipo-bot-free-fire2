@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — Instagram + TikTok + YouTube
+# 𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫 — نسخة PTB
 
 import os
 import re
@@ -8,11 +8,15 @@ import time
 import shutil
 import sqlite3
 import threading
+import logging
 from datetime import datetime
 
-import telebot
-from telebot import types
 from flask import Flask
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, filters, ContextTypes
+)
 import yt_dlp
 
 # ==================== الإعدادات ====================
@@ -23,41 +27,30 @@ BOT_NAME = "𝑷𝑰𝑷𝑶  𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫"
 ADMIN_SECRET = "830714pipo"
 
 COOKIES_FILE = "cookies.txt"
-
 DOWNLOAD_DIR = "downloads"
 DB_FILE = "pipo_bot.db"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-bot = telebot.TeleBot(BOT_TOKEN)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ==================== Flask (للـ Render) ====================
-app = Flask(__name__)
+flask_app = Flask(__name__)
 
-@app.route('/')
+@flask_app.route('/')
 def home():
     return "PIPO Bot is running!"
 
-@app.route('/health')
+@flask_app.route('/health')
 def health():
     return "OK"
 
 def run_flask():
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port)
-
-# ==================== صورة البوت ====================
-BOT_PHOTO_ID = None
-
-def load_bot_photo():
-    global BOT_PHOTO_ID
-    try:
-        me = bot.get_me()
-        photos = bot.get_user_profile_photos(me.id, limit=1)
-        if photos.total_count > 0:
-            BOT_PHOTO_ID = photos.photos[0][-1].file_id
-            print("[+] Bot photo loaded")
-    except Exception as e:
-        print(f"[!] خطأ: {e}")
+    flask_app.run(host='0.0.0.0', port=port)
 
 # ==================== FFmpeg ====================
 _ff = shutil.which("ffmpeg")
@@ -68,10 +61,8 @@ else:
     try:
         import imageio_ffmpeg
         FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
-        print("[+] FFmpeg (imageio)")
-    except Exception:
+    except:
         FFMPEG_PATH = "ffmpeg"
-        print("[!] FFmpeg غير متوفر")
 
 # ==================== قاعدة البيانات ====================
 def init_db():
@@ -92,8 +83,7 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS suggestions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER, username TEXT, first_name TEXT,
-        message TEXT,
-        date TEXT DEFAULT CURRENT_TIMESTAMP
+        message TEXT, date TEXT DEFAULT CURRENT_TIMESTAMP
     )''')
     conn.commit()
     conn.close()
@@ -109,7 +99,6 @@ def db_query(q, p=(), fetch=False):
     conn.close()
     return r
 
-# ==================== إدارة ====================
 def add_user(uid, username, first_name):
     ex = db_query("SELECT user_id FROM users WHERE user_id=?", (uid,), True)
     if not ex:
@@ -154,7 +143,7 @@ def extract_url(text):
     m = URL_REGEX.search(text) if text else None
     return m.group(0) if m else None
 
-# ==================== Instagram (لا نلمسه — يعمل) ====================
+# ==================== Instagram ====================
 def try_snapinsta(url):
     try:
         import requests
@@ -162,8 +151,9 @@ def try_snapinsta(url):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'X-Requested-With': 'XMLHttpRequest',
         }
-        api = 'https://snapinsta.app/api/ajaxSearch'
-        r = requests.post(api, data={'q': url, 't': 'media', 'lang': 'en'}, headers=HEADERS, timeout=30)
+        r = requests.post('https://snapinsta.app/api/ajaxSearch',
+                          data={'q': url, 't': 'media', 'lang': 'en'},
+                          headers=HEADERS, timeout=30)
         if r.status_code != 200: return None
         j = r.json()
         if 'data' not in j: return None
@@ -185,17 +175,15 @@ def try_oembed(url):
         import requests
         from urllib.parse import quote
         r = requests.get(f'https://api.instagram.com/oembed/?url={quote(url)}',
-                        headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
+                         headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
         if r.status_code != 200: return None
         j = r.json()
         if 'thumbnail_url' not in j: return None
         return {'type': 'url_photo', 'url': j['thumbnail_url']}
-    except Exception as e:
-        print(f"[oembed] {e}")
+    except:
         return None
 
 def download_instagram(url):
-    """Instagram — لا نلمسه، يعمل"""
     for func in [try_snapinsta, try_oembed]:
         result = func(url)
         if result:
@@ -204,9 +192,8 @@ def download_instagram(url):
         time.sleep(0.5)
     return None
 
-# ==================== TikTok + YouTube + الباقي عبر yt-dlp ====================
+# ==================== yt-dlp ====================
 def download_ytdlp(url, user_id):
-    """TikTok + YouTube + Facebook + Twitter + الباقي"""
     try:
         platform = detect_platform(url)
         safe_id = f"{user_id}_{int(time.time())}"
@@ -224,30 +211,21 @@ def download_ytdlp(url, user_id):
             'retries': 10,
             'fragment_retries': 10,
             'socket_timeout': 60,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept-Language': 'en-US,en;q=0.9',
-            },
         }
 
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
 
-        # إعدادات TikTok
         if 'tiktok' in url:
             ydl_opts['extractor_args'] = {
                 'tiktok': {
                     'api_hostname': 'api22-normal-c-useast2a.tiktokv.com',
                     'app_version': '34.0.5',
-                    'manifest_app_version': '34.0.5',
                 }
             }
-        # إعدادات YouTube
         elif 'youtube' in url or 'youtu.be' in url:
             ydl_opts['extractor_args'] = {
-                'youtube': {
-                    'player_client': ['web', 'android', 'ios', 'tv_embedded'],
-                }
+                'youtube': {'player_client': ['web', 'android', 'ios', 'tv_embedded']}
             }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -274,57 +252,42 @@ def download_media(url, user_id):
 
 # ==================== لوحات المفاتيح ====================
 def kb_services():
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton("📥 تنزيل فيديو", callback_data="dl"),
-        types.InlineKeyboardButton("📜 تاريخي", callback_data="s_history"),
-    )
-    kb.add(
-        types.InlineKeyboardButton("📊 حالتي", callback_data="s_status"),
-        types.InlineKeyboardButton("📋 المنصات", callback_data="s_platforms"),
-    )
-    kb.add(
-        types.InlineKeyboardButton("ℹ️ كيف أستخدم", callback_data="s_help"),
-        types.InlineKeyboardButton("💡 اقتراح ميزة", callback_data="suggest"),
-    )
-    kb.add(types.InlineKeyboardButton(f"🆘 الدعم @{SUPPORT_USER}",
-                                       url=f"https://t.me/{SUPPORT_USER}"))
-    return kb
+    kb = [
+        [InlineKeyboardButton("📥 تنزيل فيديو", callback_data="dl"),
+         InlineKeyboardButton("📜 تاريخي", callback_data="s_history")],
+        [InlineKeyboardButton("📊 حالتي", callback_data="s_status"),
+         InlineKeyboardButton("📋 المنصات", callback_data="s_platforms")],
+        [InlineKeyboardButton("ℹ️ كيف أستخدم", callback_data="s_help"),
+         InlineKeyboardButton("💡 اقتراح ميزة", callback_data="suggest")],
+        [InlineKeyboardButton(f"🆘 الدعم @{SUPPORT_USER}",
+                              url=f"https://t.me/{SUPPORT_USER}")],
+    ]
+    return InlineKeyboardMarkup(kb)
 
 def kb_back():
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="s_back"))
-    return kb
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="s_back")]])
 
 def kb_admin():
-    kb = types.InlineKeyboardMarkup(row_width=2)
-    kb.add(
-        types.InlineKeyboardButton("📊 إحصائيات", callback_data="a_stats"),
-        types.InlineKeyboardButton("🏆 أفضل 10", callback_data="a_top"),
-    )
-    kb.add(
-        types.InlineKeyboardButton("📢 إرسال جماعي", callback_data="a_broadcast"),
-        types.InlineKeyboardButton("🚫 حظر", callback_data="a_ban"),
-    )
-    kb.add(
-        types.InlineKeyboardButton("✅ رفع حظر", callback_data="a_unban"),
-        types.InlineKeyboardButton("📥 آخر التنزيلات", callback_data="a_recent"),
-    )
-    kb.add(
-        types.InlineKeyboardButton("📊 حسب المنصة", callback_data="a_platforms"),
-        types.InlineKeyboardButton("🔍 بحث مستخدم", callback_data="a_search"),
-    )
-    kb.add(types.InlineKeyboardButton("💡 اقتراحات", callback_data="a_suggestions"))
-    return kb
+    kb = [
+        [InlineKeyboardButton("📊 إحصائيات", callback_data="a_stats"),
+         InlineKeyboardButton("🏆 أفضل 10", callback_data="a_top")],
+        [InlineKeyboardButton("📢 إرسال جماعي", callback_data="a_broadcast"),
+         InlineKeyboardButton("🚫 حظر", callback_data="a_ban")],
+        [InlineKeyboardButton("✅ رفع حظر", callback_data="a_unban"),
+         InlineKeyboardButton("📥 آخر التنزيلات", callback_data="a_recent")],
+        [InlineKeyboardButton("📊 حسب المنصة", callback_data="a_platforms"),
+         InlineKeyboardButton("🔍 بحث مستخدم", callback_data="a_search")],
+        [InlineKeyboardButton("💡 اقتراحات", callback_data="a_suggestions")],
+    ]
+    return InlineKeyboardMarkup(kb)
 
 # ==================== /start ====================
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    uid = message.from_user.id
-    add_user(uid, message.from_user.username, message.from_user.first_name)
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    add_user(uid, update.effective_user.username, update.effective_user.first_name)
     if is_banned(uid): return
 
-    name = message.from_user.first_name or "صديقي"
+    name = update.effective_user.first_name or "صديقي"
     caption = (
         f"🔥 *أهلاً {name}*\n\n"
         f"📥 *{BOT_NAME}*\n"
@@ -337,88 +300,76 @@ def cmd_start(message):
         f"👇 أرسل رابطاً لتنزيله:"
     )
 
-    try:
-        if BOT_PHOTO_ID:
-            bot.send_photo(message.chat.id, BOT_PHOTO_ID,
-                           caption=caption, reply_markup=kb_services(),
-                           parse_mode='Markdown')
-        else:
-            bot.send_message(message.chat.id, caption,
-                             reply_markup=kb_services(),
-                             parse_mode='Markdown',
-                             disable_web_page_preview=True)
-    except Exception as e:
-        print(f"[cmd_start] {e}")
+    # محاولة إرسال صورة البوت
+    bot_photo_id = context.bot_data.get('bot_photo_id')
+    if bot_photo_id:
+        try:
+            await update.message.reply_photo(bot_photo_id, caption=caption,
+                                             reply_markup=kb_services(),
+                                             parse_mode='Markdown')
+            return
+        except:
+            pass
+
+    await update.message.reply_text(caption, reply_markup=kb_services(),
+                                     parse_mode='Markdown',
+                                     disable_web_page_preview=True)
 
 # ==================== الأزرار ====================
-@bot.callback_query_handler(func=lambda call: True)
-def cb_handler(call):
-    uid = call.from_user.id
-    data = call.data
+async def cb_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    try:
-        bot.answer_callback_query(call.id)
-    except:
-        pass
+    uid = query.from_user.id
+    data = query.data
 
     if data.startswith("a_") and uid == ADMIN_ID:
-        handle_admin_cb(call, data)
+        await handle_admin_cb(update, context, data)
         return
 
     if data == "s_back":
-        name = call.from_user.first_name or "صديقي"
+        name = query.from_user.first_name or "صديقي"
         caption = f"🔥 *أهلاً {name}*\n\n📥 *{BOT_NAME}*\n👇 أرسل رابطاً:"
         try:
-            bot.delete_message(call.message.chat.id, call.message.message_id)
+            await query.message.delete()
         except:
             pass
-        try:
-            if BOT_PHOTO_ID:
-                bot.send_photo(call.message.chat.id, BOT_PHOTO_ID,
-                               caption=caption, reply_markup=kb_services(),
-                               parse_mode='Markdown')
-            else:
-                bot.send_message(call.message.chat.id, caption,
-                                 reply_markup=kb_services(), parse_mode='Markdown')
-        except:
-            pass
+
+        bot_photo_id = context.bot_data.get('bot_photo_id')
+        if bot_photo_id:
+            try:
+                await query.message.chat.send_photo(bot_photo_id, caption=caption,
+                                                    reply_markup=kb_services(),
+                                                    parse_mode='Markdown')
+                return
+            except:
+                pass
+        await query.message.chat.send_message(caption, reply_markup=kb_services(),
+                                              parse_mode='Markdown')
         return
 
     if data == "suggest":
-        try:
-            msg = bot.send_message(call.message.chat.id,
-                "💡 *اقتراح ميزة*\n\n📝 أرسل اقتراحك:", parse_mode='Markdown')
-            bot.register_next_step_handler(msg, do_suggestion, uid)
-        except:
-            pass
+        await query.message.chat.send_message(
+            "💡 *اقتراح ميزة*\n\n📝 أرسل اقتراحك الآن:",
+            parse_mode='Markdown')
+        context.user_data['waiting_for_suggestion'] = True
         return
 
     if data == "dl":
-        try:
-            bot.send_message(call.message.chat.id, "📥 أرسل الرابط الآن.",
-                             reply_markup=kb_back())
-        except:
-            pass
+        await query.message.chat.send_message("📥 أرسل الرابط الآن.", reply_markup=kb_back())
         return
 
     if data == "s_history":
         rows = db_query("SELECT url, platform, date FROM history WHERE user_id=? ORDER BY id DESC LIMIT 10",
                         (uid,), True)
         if not rows:
-            try:
-                bot.send_message(call.message.chat.id, "📜 لا يوجد تاريخ.",
-                                 reply_markup=kb_back())
-            except:
-                pass
+            await query.message.chat.send_message("📜 لا يوجد تاريخ.", reply_markup=kb_back())
             return
         text = "📜 *آخر 10:*\n\n"
         for i, (url, plat, date) in enumerate(rows, 1):
             text += f"{i}. [{plat}] {date[:16]}\n"
-        try:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=kb_back(), parse_mode='Markdown')
-        except:
-            pass
+        await query.message.chat.send_message(text, reply_markup=kb_back(),
+                                              parse_mode='Markdown')
         return
 
     if data == "s_status":
@@ -426,11 +377,8 @@ def cb_handler(call):
         dls = r[0][0] if r else 0
         joined = r[0][1] if r else ""
         text = f"📊 *حالتك*\n\n🆔 `{uid}`\n📥 تنزيلاتك: {dls}\n📅 {joined[:10]}"
-        try:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=kb_back(), parse_mode='Markdown')
-        except:
-            pass
+        await query.message.chat.send_message(text, reply_markup=kb_back(),
+                                              parse_mode='Markdown')
         return
 
     if data == "s_platforms":
@@ -439,58 +387,23 @@ def cb_handler(call):
                 "• Twitter / X\n• Facebook\n• Snapchat\n"
                 "• Pinterest\n• Reddit\n• Telegram\n"
                 "• Vimeo\n• Dailymotion\n• Twitch")
-        try:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=kb_back(), parse_mode='Markdown')
-        except:
-            pass
+        await query.message.chat.send_message(text, reply_markup=kb_back(),
+                                              parse_mode='Markdown')
         return
 
     if data == "s_help":
         text = "ℹ️ *كيف أستخدم:*\n\n1️⃣ أرسل رابط الفيديو.\n2️⃣ انتظر التنزيل."
-        try:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=kb_back(), parse_mode='Markdown')
-        except:
-            pass
+        await query.message.chat.send_message(text, reply_markup=kb_back(),
+                                              parse_mode='Markdown')
         return
 
-# ==================== الاقتراح ====================
-def do_suggestion(message, uid):
-    if not message.text: return
-    text = message.text.strip()
-    if text.startswith('/'): return
-    username = message.from_user.username or "لا يوجد"
-    first_name = message.from_user.first_name or "مستخدم"
-    save_suggestion(uid, username, first_name, text)
-    try:
-        bot.send_message(ADMIN_ID,
-            f"💡 *اقتراح جديد*\n\n👤 {first_name}\n🆔 `{uid}`\n"
-            f"📛 @{username}\n\n📝 {text}",
-            parse_mode='Markdown')
-    except:
-        pass
-    kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="s_back"))
-    try:
-        bot.send_message(message.chat.id, "✅ تم إرسال اقتراحك!", reply_markup=kb)
-    except:
-        pass
-
 # ==================== لوحة المطور ====================
-def handle_admin_cb(call, data):
-    kb_back_a = types.InlineKeyboardMarkup()
-    kb_back_a.add(types.InlineKeyboardButton("🔙 رجوع", callback_data="a_back"))
-
-    def safe_send(text, markup=None):
-        try:
-            bot.send_message(call.message.chat.id, text,
-                             reply_markup=markup, parse_mode='Markdown')
-        except:
-            pass
+async def handle_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE, data: str):
+    query = update.callback_query
+    kb_back_a = InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="a_back")]])
 
     if data == "a_back":
-        safe_send("👑 لوحة المطور", kb_admin())
+        await query.message.chat.send_message("👑 لوحة المطور", reply_markup=kb_admin())
         return
 
     if data == "a_stats":
@@ -498,142 +411,104 @@ def handle_admin_cb(call, data):
         dls = db_query("SELECT COUNT(*) FROM history", fetch=True)[0][0]
         b = db_query("SELECT COUNT(*) FROM users WHERE banned=1", fetch=True)[0][0]
         sug = db_query("SELECT COUNT(*) FROM suggestions", fetch=True)[0][0]
-        safe_send(f"📊 *إحصائيات*\n\n👥 {users}\n🚫 {b}\n📥 {dls}\n💡 {sug}", kb_back_a)
+        await query.message.chat.send_message(
+            f"📊 *إحصائيات*\n\n👥 {users}\n🚫 {b}\n📥 {dls}\n💡 {sug}",
+            reply_markup=kb_back_a, parse_mode='Markdown')
+        return
 
-    elif data == "a_top":
+    if data == "a_top":
         rows = db_query("SELECT first_name, downloads FROM users ORDER BY downloads DESC LIMIT 10", fetch=True)
         text = "🏆 *أفضل 10:*\n\n"
         for i, (n, d) in enumerate(rows, 1):
             text += f"{i}. {n} — 📥{d}\n"
-        safe_send(text, kb_back_a)
+        await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
+        return
 
-    elif data == "a_broadcast":
-        try:
-            msg = bot.send_message(call.message.chat.id, "✍️ أرسل:")
-            bot.register_next_step_handler(msg, do_broadcast)
-        except:
-            pass
-
-    elif data == "a_ban":
-        try:
-            msg = bot.send_message(call.message.chat.id, "ID:")
-            bot.register_next_step_handler(msg, do_ban)
-        except:
-            pass
-
-    elif data == "a_unban":
-        try:
-            msg = bot.send_message(call.message.chat.id, "ID:")
-            bot.register_next_step_handler(msg, do_unban)
-        except:
-            pass
-
-    elif data == "a_recent":
+    if data == "a_recent":
         rows = db_query("SELECT user_id, platform, date FROM history ORDER BY id DESC LIMIT 15", fetch=True)
         text = "📥 *آخر 15:*\n\n"
         for u, p, d in rows:
             text += f"• {u} | {p} | {d[:16]}\n"
-        safe_send(text, kb_back_a)
+        await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
+        return
 
-    elif data == "a_platforms":
+    if data == "a_platforms":
         rows = db_query("SELECT platform, COUNT(*) FROM history GROUP BY platform ORDER BY COUNT(*) DESC", fetch=True)
         text = "📊 *حسب المنصة:*\n\n"
         for p, c in rows:
             text += f"• {p}: {c}\n"
-        safe_send(text, kb_back_a)
+        await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
+        return
 
-    elif data == "a_search":
-        try:
-            msg = bot.send_message(call.message.chat.id, "ID:")
-            bot.register_next_step_handler(msg, do_search)
-        except:
-            pass
-
-    elif data == "a_suggestions":
+    if data == "a_suggestions":
         rows = db_query("SELECT first_name, username, message, date FROM suggestions ORDER BY id DESC LIMIT 15", fetch=True)
         if not rows:
-            safe_send("💡 لا اقتراحات.", kb_back_a)
+            await query.message.chat.send_message("💡 لا اقتراحات.", reply_markup=kb_back_a)
             return
         text = "💡 *آخر 15 اقتراح:*\n\n"
         for i, (name, un, msg, date) in enumerate(rows, 1):
             text += f"{i}. *{name}* (@{un})\n   {msg[:80]}\n\n"
-        safe_send(text, kb_back_a)
+        await query.message.chat.send_message(text, reply_markup=kb_back_a, parse_mode='Markdown')
+        return
 
-def do_broadcast(msg):
-    if msg.from_user.id != ADMIN_ID: return
-    users = db_query("SELECT user_id FROM users WHERE banned=0", fetch=True)
-    ok = fail = 0
-    for (u,) in users:
-        try:
-            bot.send_message(u, msg.text); ok += 1; time.sleep(0.05)
-        except: fail += 1
-    try:
-        bot.reply_to(msg, f"✅ {ok} | ❌ {fail}")
-    except:
-        pass
+# ==================== اقتراح ====================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالج الرسائل النصية"""
+    message = update.message
+    if not message or not message.text:
+        return
 
-def do_ban(msg):
-    if msg.from_user.id != ADMIN_ID: return
-    try:
-        u = int(msg.text.strip())
-        db_query("UPDATE users SET banned=1 WHERE user_id=?", (u,))
-        bot.reply_to(msg, f"🚫 {u}")
-    except:
-        pass
-
-def do_unban(msg):
-    if msg.from_user.id != ADMIN_ID: return
-    try:
-        u = int(msg.text.strip())
-        db_query("UPDATE users SET banned=0 WHERE user_id=?", (u,))
-        bot.reply_to(msg, f"✅ {u}")
-    except:
-        pass
-
-def do_search(msg):
-    if msg.from_user.id != ADMIN_ID: return
-    try:
-        u = int(msg.text.strip())
-        r = db_query("SELECT * FROM users WHERE user_id=?", (u,), True)
-        if not r:
-            bot.reply_to(msg, "❌")
-            return
-        row = r[0]
-        bot.reply_to(msg, f"👤 {row[2]}\n🆔 {row[0]}\n📥 {row[4]}\n🚫 {'نعم' if row[3] else 'لا'}")
-    except:
-        pass
-
-# ==================== الكود السري ====================
-@bot.message_handler(func=lambda m: m.text == ADMIN_SECRET)
-def secret_admin(message):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        bot.send_message(message.chat.id, "👑 *لوحة المطور*",
-                         reply_markup=kb_admin(), parse_mode='Markdown')
-    except:
-        pass
-
-# ==================== استقبال الروابط ====================
-@bot.message_handler(func=lambda m: m.text and URL_REGEX.search(m.text))
-def handle_url(message):
+    text = message.text.strip()
     uid = message.from_user.id
-    chat_id = message.chat.id
-    add_user(uid, message.from_user.username, message.from_user.first_name)
+
     if is_banned(uid): return
 
-    url = extract_url(message.text)
-    if not url: return
-    platform = detect_platform(url)
+    # اقتراح
+    if context.user_data.get('waiting_for_suggestion'):
+        context.user_data['waiting_for_suggestion'] = False
+        username = message.from_user.username or "لا يوجد"
+        first_name = message.from_user.first_name or "مستخدم"
+        save_suggestion(uid, username, first_name, text)
+        try:
+            await context.bot.send_message(
+                ADMIN_ID,
+                f"💡 *اقتراح جديد*\n\n👤 {first_name}\n🆔 `{uid}`\n"
+                f"📛 @{username}\n\n📝 {text}",
+                parse_mode='Markdown')
+        except:
+            pass
+        await message.reply_text("✅ تم إرسال اقتراحك!")
+        return
 
-    wait = bot.send_message(chat_id, f"⏳ جارٍ التنزيل من {platform}...")
+    # كود المطور السري
+    if text == ADMIN_SECRET and uid == ADMIN_ID:
+        await message.reply_text("👑 *لوحة المطور*", reply_markup=kb_admin(),
+                                  parse_mode='Markdown')
+        return
+
+    # رابط
+    url = extract_url(text)
+    if url:
+        await handle_url(update, context, url)
+        return
+
+    if text.startswith('/'):
+        return
+
+    await message.reply_text("📌 أرسل رابط فيديو للتنزيل.")
+
+async def handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+    message = update.message
+    uid = message.from_user.id
+    add_user(uid, message.from_user.username, message.from_user.first_name)
+
+    platform = detect_platform(url)
+    wait = await message.reply_text(f"⏳ جارٍ التنزيل من {platform}...")
+
     result = download_media(url, uid)
 
     if not result:
-        try:
-            bot.edit_message_text(f"❌ فشل التنزيل من {platform}\n\nجرب رابطاً آخر.",
-                                  chat_id=chat_id, message_id=wait.message_id)
-        except:
-            pass
+        await wait.edit_text(f"❌ فشل التنزيل من {platform}\n\nجرب رابطاً آخر.")
         return
 
     title = result.get('title', '')[:100] if 'title' in result else ''
@@ -641,21 +516,21 @@ def handle_url(message):
 
     try:
         if result['type'] == 'url_video':
-            bot.send_video(chat_id, result['url'], caption=caption, supports_streaming=True)
+            await message.reply_video(result['url'], caption=caption, supports_streaming=True)
         elif result['type'] == 'url_photo':
-            bot.send_photo(chat_id, result['url'], caption=caption)
+            await message.reply_photo(result['url'], caption=caption)
         elif result['type'] == 'file':
             ext = result['path'].split('.')[-1].lower()
             with open(result['path'], 'rb') as f:
                 if ext == 'mp3':
-                    bot.send_audio(chat_id, f, caption=caption)
+                    await message.reply_audio(f, caption=caption)
                 else:
-                    bot.send_video(chat_id, f, caption=caption, supports_streaming=True)
+                    await message.reply_video(f, caption=caption, supports_streaming=True)
             try: os.remove(result['path'])
             except: pass
 
         try:
-            bot.delete_message(chat_id, wait.message_id)
+            await wait.delete()
         except:
             pass
 
@@ -664,30 +539,24 @@ def handle_url(message):
     except Exception as e:
         print(f"[send] {e}")
         try:
-            bot.edit_message_text(f"❌ خطأ: {e}",
-                                  chat_id=chat_id, message_id=wait.message_id)
+            await wait.edit_text(f"❌ خطأ: {e}")
         except:
             pass
 
-# ==================== رسائل أخرى ====================
-@bot.message_handler(func=lambda m: True, content_types=['text', 'photo', 'video'])
-def handle_other(message):
-    if message.text and message.text.startswith('/'):
-        return
-    try:
-        bot.reply_to(message, "📌 أرسل رابط فيديو للتنزيل.")
-    except:
-        pass
-
 # ==================== التشغيل ====================
-if __name__ == '__main__':
+async def post_init(application: Application):
+    """يُستدعى بعد تهيئة التطبيق — لجلب صورة البوت"""
     try:
-        bot.remove_webhook()
-        print("[+] Webhook cleared")
-    except:
-        pass
+        me = await application.bot.get_me()
+        photos = await application.bot.get_user_profile_photos(me.id, limit=1)
+        if photos.total_count > 0:
+            application.bot_data['bot_photo_id'] = photos.photos[0][-1].file_id
+            print("[+] Bot photo loaded")
+    except Exception as e:
+        print(f"[!] Bot photo: {e}")
 
-    load_bot_photo()
+def main():
+    # Flask في خيط منفصل
     threading.Thread(target=run_flask, daemon=True).start()
 
     print("=" * 60)
@@ -695,12 +564,23 @@ if __name__ == '__main__':
     print("=" * 60)
     print(f"  🎬 FFmpeg: {FFMPEG_PATH}")
     print(f"  🍪 Cookies: {'✓' if os.path.exists(COOKIES_FILE) else '✗'}")
-    print(f"  🖼️  Photo: {'✓' if BOT_PHOTO_ID else '✗'}")
     print("=" * 60)
 
-    while True:
-        try:
-            bot.infinity_polling(timeout=30, long_polling_timeout=20, skip_pending=True)
-        except Exception as e:
-            print(f"[!] Polling error: {e}")
-            time.sleep(5)
+    # بناء التطبيق
+    application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+
+    # الأوامر
+    application.add_handler(CommandHandler("start", cmd_start))
+
+    # الأزرار (Callback)
+    application.add_handler(CallbackQueryHandler(cb_handler))
+
+    # الرسائل (روابط + اقتراحات)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    # التشغيل
+    print("[+] Starting polling...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+if __name__ == '__main__':
+    main()
