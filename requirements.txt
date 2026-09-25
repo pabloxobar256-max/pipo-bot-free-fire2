@@ -1,0 +1,5 @@
+pyTelegramBotAPI
+yt-dlp
+instaloader
+imageio-ffmpeg
+Flask
